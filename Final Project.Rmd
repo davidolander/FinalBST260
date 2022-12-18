@@ -1,0 +1,569 @@
+---
+title: "Final Project - Heart Failure Analysis"
+author: "David Olander"
+date: "2022-12-16"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(ggplot2)
+library(corrplot)
+library(glmnet)
+library(HistData)
+library(caret)
+library(randomForest)
+library(gridExtra)
+
+draw_confusion_matrix <- function(cm) {
+
+  layout(matrix(c(1,1,2)))
+  par(mar=c(2,2,2,2))
+  plot(c(100, 345), c(300, 450), type = "n", xlab="", ylab="", xaxt='n', yaxt='n')
+  title('CONFUSION MATRIX', cex.main=2)
+
+  # create the matrix 
+  rect(150, 430, 240, 370, col='#3F97D0')
+  text(195, 435, 'Class1', cex=1.2)
+  rect(250, 430, 340, 370, col='#F7AD50')
+  text(295, 435, 'Class2', cex=1.2)
+  text(125, 370, 'Predicted', cex=1.3, srt=90, font=2)
+  text(245, 450, 'Actual', cex=1.3, font=2)
+  rect(150, 305, 240, 365, col='#F7AD50')
+  rect(250, 305, 340, 365, col='#3F97D0')
+  text(140, 400, 'Class1', cex=1.2, srt=90)
+  text(140, 335, 'Class2', cex=1.2, srt=90)
+
+  # add in the cm results 
+  res <- as.numeric(cm$table)
+  text(195, 400, res[1], cex=1.6, font=2, col='white')
+  text(195, 335, res[2], cex=1.6, font=2, col='white')
+  text(295, 400, res[3], cex=1.6, font=2, col='white')
+  text(295, 335, res[4], cex=1.6, font=2, col='white')
+
+  # add in the specifics 
+  plot(c(100, 0), c(100, 0), type = "n", xlab="", ylab="", main = "DETAILS", xaxt='n', yaxt='n')
+  text(10, 85, names(cm$byClass[1]), cex=1.2, font=2)
+  text(10, 70, round(as.numeric(cm$byClass[1]), 3), cex=1.2)
+  text(30, 85, names(cm$byClass[2]), cex=1.2, font=2)
+  text(30, 70, round(as.numeric(cm$byClass[2]), 3), cex=1.2)
+  text(50, 85, names(cm$byClass[5]), cex=1.2, font=2)
+  text(50, 70, round(as.numeric(cm$byClass[5]), 3), cex=1.2)
+  text(70, 85, names(cm$byClass[6]), cex=1.2, font=2)
+  text(70, 70, round(as.numeric(cm$byClass[6]), 3), cex=1.2)
+  text(90, 85, names(cm$byClass[7]), cex=1.2, font=2)
+  text(90, 70, round(as.numeric(cm$byClass[7]), 3), cex=1.2)
+
+  # add in the accuracy information 
+  text(30, 35, names(cm$overall[1]), cex=1.5, font=2)
+  text(30, 20, round(as.numeric(cm$overall[1]), 3), cex=1.4)
+  text(70, 35, names(cm$overall[2]), cex=1.5, font=2)
+  text(70, 20, round(as.numeric(cm$overall[2]), 3), cex=1.4)
+} 
+```
+
+# Introduction:
+
+Heart failure is a syndrome that is a result of functional or structural impairment of ventricles which can result in insufficient cardiac output, and the heart fails to keep up with the needs of the body.\^1 Cardiovascular diseases, or CVDs, is an umbrella term to describe all the diseases of the heart or of the blood vessels; this includes heart disease, heart attack, stroke, arrhythmia, and other heart or blood vessel conditions.\^2 It is estimated that approximately 17.9 million lives are lost yearly due to CVDs worldwide.\^3 This ranks as the number one leading cause of death worldwide, higher than cancer. Heart failure is usually an event caused by CVDs, and to explore this topic, I chose a dataset to look at the association between certain variables and the outcome of death from heart failure.
+
+To explore this topic and conduct an analysis, I obtained a dataset from Kaggle that included data on clinical data about heart failure. The dataset is pre-processed and includes data for 299 patients with heart failure in 2015. The variables that are included in this dataset are age, anemia status, creatinine phosphokinase levels, diabetes status, ejection fraction, high blood pressure status, platelet counts (kiloplatelets/mL), serum creatinine levels in blood (mg/dL), serum sodium levels in blood (mEq/L), sex, smoking status, and death event.
+
+For my analysis, I have decided to answer the question of: what variables are associated with death from heart failure, how can we model this, and what is a sufficient prediction model to possibly predict the outcome of death?
+
+For my analysis, I will assess the association between ejection fraction, serum sodium, and serum creatinine on the outcome, death from heart failure, and while controlling for age. Because the outcome of death from heart failure is binary, where death = 1 and no death = 0, I decided to measure the association by fitting a logistic regression model and obtain an odds ratio. The reason why I was interested in these variables are a result of my exploratory data analysis and getting to know my data better, where I determined that these covariates would be important to include in my model. Additionally, I will create a couple prediction models from the data to assess the logistic regression covariates I included to including all the covariates.
+
+## Exploratory Analysis:
+
+```{r, echo = FALSE, message=FALSE}
+## Loading in data:
+setwd("C:/Users/david/Desktop/BST260/FinalFinalProject/FinalBST260/")
+heart_failure <- read.csv("heart_failure.csv")
+
+## Renaming Variable(s):
+heart_failure <- heart_failure %>%
+  rename(death = DEATH_EVENT)
+
+heart_failure <- subset(heart_failure, select = -c(time))
+```
+
+```{r, echo = FALSE}
+corr <- cor(heart_failure)
+corrplot(corr, title = "Figure 1:")
+```
+
+### Figure 1: To begin my exploratory data analysis, I wanted to look at a plot to see variable importance to get a sense of what variables may be important to consider when looking at the outcome of death. While I ended up look at all the variables in my exploratory analysis, this gave me a start to what I should maybe consider when looking at association and modeling the relationship. The bigger dots suggest more variable importance, so I took note of this.
+
+
+```{r, echo = FALSE,  message=FALSE}
+# Age
+p1 <- heart_failure %>%
+  ggplot(aes(x = age, group = factor(death), fill = factor(death))) + 
+  geom_histogram(position = "identity") +
+  scale_fill_discrete(name = "Death Event", labels = c("No death", "Death")) +
+  labs(title = "F2: Age by Death Outcome", color = "Death Event") +
+  theme_bw()
+
+# Ejection Fraction
+p2 <- heart_failure %>%
+  ggplot(aes(x = ejection_fraction, group = factor(death), fill = factor(death))) + 
+  geom_histogram(position = "identity", bins = 10) +
+  scale_fill_discrete(name = "Death Event", labels = c("No death", "Death")) +
+  labs(title = "F3: Ejection Fraction by Death Outcome", color = "Death Event") +
+  theme_bw()
+
+# Serum Sodium:
+p3 <- heart_failure %>%
+  ggplot(aes(x = serum_sodium, group = factor(death), fill = factor(death))) + 
+  geom_histogram(position = "identity", bins = 10) +
+  scale_fill_discrete(name = "Death Event", labels = c("No death", "Death")) +
+  labs(title = "F4: Serum Sodium by Death Outcome", color = "Death Event") +
+  theme_bw()
+
+# Serum Creatinine:
+p4 <- heart_failure %>%
+  ggplot(aes(x = serum_creatinine, group = factor(death), fill = factor(death))) + 
+  geom_histogram(position = "identity", bins = 10) +
+  scale_fill_discrete(name = "Death Event", labels = c("No death", "Death")) +
+  labs(title = "F5: Platelet by Death Outcome", color = "Death Event") +
+  theme_bw()
+
+grid.arrange(p1, p2, p3, p4, nrow = 2, ncol = 2)
+```
+
+### Figure 2,3,4,5: Here are 4 plots of the varaible distributions that I found to be the most interesting and important. I looked at the distributions of each variable and grouped by death outcome to see if there was anything I could see different from the 2 group (death and no death). Note: more EDA can be found in the appendix
+
+
+
+# Results (Route 2):
+
+## Logistic Regression and Association:
+To begin with association tests and logistic regression, I began fitting various models. I first checked and verified assumptions for fitting a logistic regression model, and proceeded. For my first model, I began simple and had just age to predict the death outcome. Age was a statistically significant variable for this model, and following *(Table 1)*, it had an AIC value of 359.993. An AIC value, or Akaike Information Criteria, helps assess a model fit in relation to other models, hence why I decided to assess my models this way. A lower AIC value relative to its other models means a better fit. Next, I fit a model, model2, with age and ejection fraction, and found that both covariates were also statisitcally significant, with and the model having an AIC value of 333.4015, suggesting improvement to our model. Continuing, I fit another model, model3, adding serum sodium level to the model, and found it was also statistically significant, with an AIC value of 329.95. This continues to show that the model is imporving fit. Furthermore, I continued this with model4, adding on serum creatinine, and then finally model5, which included an interaction term of age to help assess effect modification since age is a confounder.
+
+When looking at the AIC values and comparing them to each of the models, we can see that model4, which included age, ejection fraction, serum sodium, and serum creatinine to assess association to death from heart failure had the best fit *(Table 2)*. Preference is given to the model with the lowest AIC value. Furthermore, likelihood ratio tests were used to compare a reduced model to a full model, where the null hypothesis suggests that the reduced model is sufficient to model and the alternative hypothesis suggests that the full model is preferred *(Table 3)*. In other words, I compared the two lowest AIC value models to see which model would be preferred, and model4 was still better than model3 as we rejected the null hypothesis. Additionally, I ran another likelihood ratio test to compare model5 and model4, and we failed to reject the null hypothesis and that model4 is still preferred *(Table 4)*.
+
+For our findings given the model selection of model4, our data shows that those with one-unit higher in age have a 1.05 times the odds of death associated with heart failure occurring compared to those with one-unit lower, on average, holding all other covariates constant, with a 95% CI: [1.028, 1.079]. This suggests that with age, the odds of death is greater. Additionally, those with a one-unit higher in ejection fraction have a 0.935 times the odds of death associated with heart failure occurring compared to those with one-unit lower, on average, holding all other covariates constant, with a 95% CI: [0.908, 0.961]. This suggests that higher ejection fractions have a protective effect on heart failure. Those with one-unit higher in serum sodium levels have a 0.953 times the odds of death associated with heart failure occurring compared to those with one-unit lower, on average, holding all other covariates constant. However, the 95% CI [0.894, 1.016] includes 1, suggesting that this may not significant. Finally, those with one-unit higher in serum creatinine levels have a 1.88 times the odds of death associated with heart failure occurring compared to those with one-unit lower, on average, holding all other covariates constant, with a 95% CI: [1.406, 2.655].
+
+
+## Prediction Model:
+
+Next, I wanted to get a prediction model and assess the accuracy. To do this, given that the dataset is small, I decided that splitting up the data into 80/20, with 80% of the data being the train set, and then 20% being the test set, I would see which if the model I fit would be good in prediction. I also decided to compare this to another model including all the covariates to see which model would do better (although, this model would result in over-fitting since it includes all the covariates, so I wanted to see if my lower model would perform just as well or even better). So I trained my model4 with the train set and we can see that that model4 had a test set accuracy of 0.7699 *(Table 5)*. In comparison to a model with all the covariates included in it, the test set accuracy was 0.7657 *(Table 6)*. While both are very close in accuracy, it is fair to say that the model4 that was developed was more accurate and has a better fit, and may be more generalizable to a greater population since it did not overfit. Overall, I am satisfied with the model that I created and believe that its accuracy in predicting heart failure is relatively high since there are so many different factors that can play a part in leading up to death from heart failure.
+
+
+# Conclusion:
+
+The purpose of my analysis was to assess the association between ejection fraction, serum sodium, and serum creatinine on the outcome, death from heart failure, and while controlling for age, and model this. Also, to create a prediction model from the data to assess the logistic regression covariates I included versus including all the covariates.
+
+To conclude, I have determined that the variables most associated with death from heart disease are age, ejection fraction, serum creatinine, and serum sodium levels. To best model this, I ran a logistic regression model to best fit the binary nature of the outcome of death from heart failure. I assessed various models and compared them with AIC and likelihood ratio tests. I determined that a model with heart disease are age, ejection fraction, serum creatinine, and serum sodium levels. In parallel to this, I wanted to assess the prediction ability of the model I have created in comparison to a model that included all the covariates. I ultimately determined that the model that I created, which had fewer covariates, was just as accurate as a model with all the covariates. However, I came to the logical conclusion that the model with all the covariates would likely be overfitting the data and would not be generalizable; therefore, my model is likely to be more generalizable and accurate to the real world.
+
+I would say that my analysis was successful with fitting a regression model and doing an association test, as well as doing a prediction model. However, I would say that the time constraint hindered my analysis as I chose a fairly small data set that may not be representative of the US population or really any population. Therefore, if I had more time, I would chose a different dataset that included many more observations. I would also like to explore applying kNN or random forest to the bigger dataset and comparing it to the approach of using logistic regression. In other words, I would like to see if the logistic regression would be just as close or even better than the models.
+
+
+```{r, include = FALSE}
+death_factor <- as.factor(heart_failure$death)
+
+# With Just Age as Covariate:
+model1 <- glm(death ~ age, data = heart_failure, family = "binomial")
+logOR.scale <- summary(model1)$coefficients
+OR.scale <- exp(cbind(OR = coef(model1), confint(model1)))
+cbind(OR.scale, logOR.scale)
+
+model1_aic <- model1$aic
+
+
+# Age and Ejection Fraction:
+model2 <- glm(death ~ age + ejection_fraction, data = heart_failure, family = "binomial")
+logOR.scale <- summary(model2)$coefficients
+OR.scale <- exp(cbind(OR = coef(model2), confint(model2)))
+cbind(OR.scale, logOR.scale)
+
+model2_aic <- model2$aic
+
+# Age, EF, and Sodium:
+model3 <- glm(death ~ age + ejection_fraction + serum_sodium, data = heart_failure, family = "binomial")
+logOR.scale <- summary(model3)$coefficients
+OR.scale <- exp(cbind(OR = coef(model3), confint(model3)))
+cbind(OR.scale, logOR.scale)
+
+model3_aic <- model3$aic
+
+
+#Age, EF, and serum_sodium, serum_creatinine:
+model4 <- glm(death ~ age + ejection_fraction + serum_sodium + serum_creatinine, data = heart_failure, family = "binomial")
+logOR.scale <- summary(model4)$coefficients
+OR.scale <- exp(cbind(OR = coef(model4), confint(model4)))
+cbind(OR.scale, logOR.scale)
+
+model4_aic <- model4$aic
+
+# Interaction Term:
+model5 <- glm(death ~ age + ejection_fraction + age*ejection_fraction+ age*serum_sodium + age*serum_creatinine, data = heart_failure, family = "binomial")
+
+model5_aic <- model5$aic
+
+
+# LRT to see if reduced or full model preferred:
+anova(model3, model4, test = "Chisq")
+
+# LRT to see if interaction terms needed:
+anova(model4, model5, test = "Chisq")
+```
+### TABLE 1: Shows the AIC values for various fitted logistic regression models
+```{r, echo = FALSE}
+aic_values <- data.frame(TABLE_1 = "AIC VALUE", model_1 = model1_aic, model_2 = model2_aic, model_3 = model3_aic, model_4 = model4_aic,
+                     model_5 = model5_aic)
+aic_values
+```
+
+
+### TABLE 2: Logistic Regression Model fit with age, ejection fraction, serum sodium, and serum creatining
+```{r, message= FALSE, echo = FALSE}
+model4 <- glm(death ~ age + ejection_fraction + serum_sodium + serum_creatinine, data = heart_failure, family = "binomial")
+logOR.scale <- summary(model4)$coefficients
+OR.scale <- exp(cbind(OR = coef(model4), confint(model4)))
+cbind(OR.scale, logOR.scale)
+```
+
+
+### TABLE 3: Likelihood Ratio Test to assess model covariates
+```{r, echo = FALSE}
+# LRT to see if reduced or full model preferred:
+anova(model3, model4, test = "Chisq")
+```
+
+### TABLE 4: Likelihood Ratio Test to assess model covariates
+```{r, echo = FALSE}
+# LRT to see if interaction terms needed:
+anova(model4, model5, test = "Chisq")
+```
+
+
+### TABLE 5: Prediction Model4
+```{r, echo = FALSE}
+set.seed(1)
+dt = sort(sample(nrow(heart_failure), nrow(heart_failure)*.8))
+train <- heart_failure[dt,]
+test <- heart_failure[-dt,]
+training_model <- glm(death ~ age + ejection_fraction + serum_sodium + serum_creatinine, data = heart_failure, family = "binomial")
+
+results <- train %>% 
+  mutate(pred_prob_model = predict(training_model, newdata = train, type = "response")) %>% 
+  mutate(pred_outcome_model = ifelse(pred_prob_model >= 0.5, 1,0))
+
+results$death <- as.factor(results$death)
+results$pred_outcome_model <- as.factor(results$pred_outcome_model)
+
+b <- confusionMatrix(results$pred_outcome_model, results$death)
+```
+
+```{r, echo=FALSE}
+draw_confusion_matrix(b)
+```
+
+
+
+### TABLE 6: Prediction Model with all covariates
+```{r, echo= FALSE}
+set.seed(1)
+training_model <- glm(death ~ ., data = train, family = "binomial")
+
+results <- train %>% 
+  mutate(pred_prob_model = predict(training_model, newdata = train, type = "response")) %>% 
+  mutate(pred_outcome_model = ifelse(pred_prob_model >= 0.5, 1,0))
+
+results$death <- as.factor(results$death)
+results$pred_outcome_model <- as.factor(results$pred_outcome_model)
+
+a <- confusionMatrix(results$pred_outcome_model, results$death)
+```
+
+```{r, echo = FALSE}
+draw_confusion_matrix(a)
+```
+
+
+
+
+
+
+# References:
+
+1. NHLBI. Know the Differences: Cardiovascular Disease, Heart Disease, Coronary Heart Disease. NHLBI - NIH. Know the Differences Cardiovascular Disease, Heart Disease, Coronary Heart Disease. Published 2019.
+
+2. WHO. Cardiovascular diseases. World Health Organization. https://www.who.int/health-topics/cardiovascular-diseases/#tab=tab_1. Published 2020.
+
+3. Gaziano TA, Bitton A, Anand S, Abrahams-Gessel S, Murphy A. Growing epidemic of coronary heart disease in low- and middle-income countries. Curr Probl Cardiol. 2010;35(2):72-115. doi:10.1016/j.cpcardiol.2009.10.002
+
+4. https://stackoverflow.com/questions/23891140/r-how-to-visualize-confusion-matrix-using-the-caret-package
+
+
+
+
+# Appendix:
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(ggplot2)
+library(corrplot)
+library(glmnet)
+library(HistData)
+library(caret)
+library(randomForest)
+library(gridExtra)
+
+#Function to draw confusion matrix [source 4]:
+draw_confusion_matrix <- function(cm) { 
+
+  layout(matrix(c(1,1,2)))
+  par(mar=c(2,2,2,2))
+  plot(c(100, 345), c(300, 450), type = "n", xlab="", ylab="", xaxt='n', yaxt='n')
+  title('CONFUSION MATRIX', cex.main=2)
+
+  # create the matrix 
+  rect(150, 430, 240, 370, col='#3F97D0')
+  text(195, 435, 'Class1', cex=1.2)
+  rect(250, 430, 340, 370, col='#F7AD50')
+  text(295, 435, 'Class2', cex=1.2)
+  text(125, 370, 'Predicted', cex=1.3, srt=90, font=2)
+  text(245, 450, 'Actual', cex=1.3, font=2)
+  rect(150, 305, 240, 365, col='#F7AD50')
+  rect(250, 305, 340, 365, col='#3F97D0')
+  text(140, 400, 'Class1', cex=1.2, srt=90)
+  text(140, 335, 'Class2', cex=1.2, srt=90)
+
+  # add in the cm results 
+  res <- as.numeric(cm$table)
+  text(195, 400, res[1], cex=1.6, font=2, col='white')
+  text(195, 335, res[2], cex=1.6, font=2, col='white')
+  text(295, 400, res[3], cex=1.6, font=2, col='white')
+  text(295, 335, res[4], cex=1.6, font=2, col='white')
+
+  # add in the specifics 
+  plot(c(100, 0), c(100, 0), type = "n", xlab="", ylab="", main = "DETAILS", xaxt='n', yaxt='n')
+  text(10, 85, names(cm$byClass[1]), cex=1.2, font=2)
+  text(10, 70, round(as.numeric(cm$byClass[1]), 3), cex=1.2)
+  text(30, 85, names(cm$byClass[2]), cex=1.2, font=2)
+  text(30, 70, round(as.numeric(cm$byClass[2]), 3), cex=1.2)
+  text(50, 85, names(cm$byClass[5]), cex=1.2, font=2)
+  text(50, 70, round(as.numeric(cm$byClass[5]), 3), cex=1.2)
+  text(70, 85, names(cm$byClass[6]), cex=1.2, font=2)
+  text(70, 70, round(as.numeric(cm$byClass[6]), 3), cex=1.2)
+  text(90, 85, names(cm$byClass[7]), cex=1.2, font=2)
+  text(90, 70, round(as.numeric(cm$byClass[7]), 3), cex=1.2)
+
+  # add in the accuracy information 
+  text(30, 35, names(cm$overall[1]), cex=1.5, font=2)
+  text(30, 20, round(as.numeric(cm$overall[1]), 3), cex=1.4)
+  text(70, 35, names(cm$overall[2]), cex=1.5, font=2)
+  text(70, 20, round(as.numeric(cm$overall[2]), 3), cex=1.4)
+} 
+```
+
+
+```{r}
+## Loading in data:
+heart_failure <- read.csv("heart_failure.csv")
+```
+
+```{r}
+# Exploratory Data Analysis:
+
+## Look at Data Structure:
+heart_failure %>% head()
+str(heart_failure)
+
+## Renaming Variable(s):
+heart_failure <- heart_failure %>%
+  rename(death = DEATH_EVENT)
+
+heart_failure <- subset(heart_failure, select = -c(time))
+
+corr <- cor(heart_failure)
+corrplot(corr)
+
+## Number of Variables:
+length(heart_failure)
+
+## Number of Rows:
+nrow(heart_failure)
+
+
+## Distribution of Certain Variables:
+### Age
+heart_failure %>%
+  ggplot(aes(x = age)) + geom_histogram(bins = 15) + theme(axis.text.x = element_text(angle = 45, hjust = 1)) + ggtitle("Age")
+
+heart_failure %>%
+  ggplot(aes(x = age, group = factor(death), fill = factor(death))) + 
+  geom_histogram(position = "identity") +
+  scale_fill_discrete(name = "Death Event", labels = c("No death", "Death")) +
+  labs(title = "Age by Death Outcome", color = "Death Event") +
+  theme_bw()
+
+summary(heart_failure$age)
+
+
+### Creatinine Phosphokinase
+heart_failure %>%
+  ggplot(aes(x = creatinine_phosphokinase)) + geom_histogram() + theme(axis.text.x = element_text(angle = 45, hjust = 1)) +   
+  ggtitle("Creatinine Phosphokinase")
+
+summary(heart_failure$creatinine_phosphokinase)
+
+### Platelets
+heart_failure %>%
+  ggplot(aes(x = platelets)) + geom_bar() + ylim(0,2) + theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  ggtitle("Platelets")
+
+heart_failure %>%
+  ggplot(aes(x = platelets, group = factor(death), fill = factor(death))) + 
+  geom_histogram(position = "identity", bins = 10) +
+  scale_fill_discrete(name = "Death Event", labels = c("No death", "Death")) +
+  labs(title = "Platelet by Death Outcome", color = "Death Event") +
+  theme_bw()
+
+
+summary(heart_failure$platelets)
+
+## Ejection Fraction
+hist(heart_failure$ejection_fraction)
+
+heart_failure %>%
+  ggplot(aes(x = ejection_fraction, group = factor(death), fill = factor(death))) + 
+  geom_histogram(position = "identity", bins = 10) +
+  scale_fill_discrete(name = "Death Event", labels = c("No death", "Death")) +
+  labs(title = "Ejection Fraction by Death Outcome", color = "Death Event") +
+  theme_bw()
+
+## Serum Sodium:
+heart_failure %>%
+  ggplot(aes(x = serum_sodium, group = factor(death), fill = factor(death))) + 
+  geom_histogram(position = "identity", bins = 10) +
+  scale_fill_discrete(name = "Death Event", labels = c("No death", "Death")) +
+  labs(title = "Serum Sodium by Death Outcome", color = "Death Event") +
+  theme_bw()
+
+## Diabetes:
+heart_failure %>%
+  ggplot(aes(x = diabetes, group = factor(death), fill = factor(death))) + 
+  geom_histogram(position = "dodge", bins = 10) +
+  scale_fill_discrete(name = "Death Event", labels = c("No death", "Death")) +
+  labs(title = "Diabetes by Death Outcome", color = "Death Event") +
+  theme_bw()
+
+## Smoking:
+heart_failure %>%
+  ggplot(aes(x = smoking, group = factor(death), fill = factor(death))) + 
+  geom_histogram(position = "dodge", bins = 10) +
+  scale_fill_discrete(name = "Death Event", labels = c("No death", "Death")) +
+  labs(title = "Smoking by Death Outcome", color = "Death Event") +
+  theme_bw()
+
+
+## Checking Missing Data:
+sum(is.na(heart_failure))
+
+
+## Count of Death Events:
+sum(heart_failure$death)
+
+
+# Graphs:
+plot(heart_failure$age, heart_failure$diabetes)
+
+
+```
+
+# Logistic Regression, Model Selection, Association:
+
+```{r}
+death_factor <- as.factor(heart_failure$death)
+
+# With Just Age as Covariate:
+model1 <- glm(death ~ age, data = heart_failure, family = "binomial")
+logOR.scale <- summary(model1)$coefficients
+OR.scale <- exp(cbind(OR = coef(model1), confint(model1)))
+cbind(OR.scale, logOR.scale)
+
+model1$aic
+
+
+# Age and Ejection Fraction:
+model2 <- glm(death ~ age + ejection_fraction, data = heart_failure, family = "binomial")
+logOR.scale <- summary(model2)$coefficients
+OR.scale <- exp(cbind(OR = coef(model2), confint(model2)))
+cbind(OR.scale, logOR.scale)
+
+model2$aic
+
+# Age, EF, and Sodium:
+model3 <- glm(death ~ age + ejection_fraction + serum_sodium, data = heart_failure, family = "binomial")
+logOR.scale <- summary(model3)$coefficients
+OR.scale <- exp(cbind(OR = coef(model3), confint(model3)))
+cbind(OR.scale, logOR.scale)
+
+model3$aic
+
+
+#Age, EF, and serum_sodium, serum_creatinine:
+model4 <- glm(death ~ age + ejection_fraction + serum_sodium + serum_creatinine, data = heart_failure, family = "binomial")
+logOR.scale <- summary(model4)$coefficients
+OR.scale <- exp(cbind(OR = coef(model4), confint(model4)))
+cbind(OR.scale, logOR.scale)
+
+model4$aic
+
+# Interaction Term:
+model5 <- glm(death ~ age + ejection_fraction + age*ejection_fraction+ age*serum_sodium + age*serum_creatinine, data = heart_failure, family = "binomial")
+
+
+# LRT to see if reduced or full model preferred:
+anova(model3, model4, test = "Chisq")
+
+# LRT to see if interaction terms needed:
+anova(model4, model5, test = "Chisq")
+
+```
+
+# Prediction:
+
+```{r}
+set.seed(1)
+dt = sort(sample(nrow(heart_failure), nrow(heart_failure)*.8))
+train <- heart_failure[dt,]
+test <- heart_failure[-dt,]
+
+training_model <- glm(death ~ ., data = train, family = "binomial")
+
+results <- train %>% 
+  mutate(pred_prob_model = predict(training_model, newdata = train, type = "response")) %>% 
+  mutate(pred_outcome_model = ifelse(pred_prob_model >= 0.5, 1,0))
+
+results$death <- as.factor(results$death)
+results$pred_outcome_model <- as.factor(results$pred_outcome_model)
+
+confusionMatrix(results$pred_outcome_model, results$death)
+```
+
+```{r}
+training_model <- glm(death ~ age + ejection_fraction + serum_sodium + serum_creatinine, data = heart_failure, family = "binomial")
+
+results <- train %>% 
+  mutate(pred_prob_model = predict(training_model, newdata = train, type = "response")) %>% 
+  mutate(pred_outcome_model = ifelse(pred_prob_model >= 0.5, 1,0))
+
+results$death <- as.factor(results$death)
+results$pred_outcome_model <- as.factor(results$pred_outcome_model)
+
+
+confusionMatrix(results$pred_outcome_model, results$death)
+```
+
+# 
+
+```{r}
+
+```
